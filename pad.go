@@ -9,6 +9,11 @@ type Pad struct {
 	Curs   Gps
   Frame  Gps
 
+  Color  uint8
+  Attrs  uint8
+
+  AutoFill bool
+
   Screen *Window
 }
 
@@ -20,10 +25,7 @@ func NewPad( w *Window ) *Pad {
 }
 
 func (p *Pad) AddCh( ch uint64 ) {
-  chAttrs, chColor, _, r := extractData( ch )
-  cell := Cell{ Attrs: chAttrs, Color: chColor, Ch: r, Touch: true }
-
-  p.AddCell( cell )
+  p.AddCell( extractCell( ch ) )
 }
 
 func (p *Pad) AddChs( ch []uint64 ) {
@@ -32,21 +34,22 @@ func (p *Pad) AddChs( ch []uint64 ) {
   }
 }
 
+func (p *Pad) AddRune( r rune ){
+  c := p.GetDefaultCell()
+  c.Ch = r
+  p.AddCell( c )
+}
+
 func (p *Pad) AddStr( str string ){
-  for _, c := range( str ) {
-    p.AddCh( uint64(c) )
-  }
+  p.AddCells( p.StrToCells( str ) )
 }
 
 func (p *Pad) AddCell( cell Cell ) {
+  cell.Touch = true
+
   p.Mv( p.Curs.Y, p.Curs.X )
   p.Buffer[ p.Curs.Y ][ p.Curs.X ] = cell
   p.mvCurs( cell.Ch == '\n' )
-}
-
-func (p *Pad) SetCell( cell Cell ) {
-  p.Mv( p.Curs.Y, p.Curs.X )
-  p.Buffer[ p.Curs.Y ][ p.Curs.X ] = cell
 }
 
 func (p *Pad) AddCells( cells []Cell ) {
@@ -55,6 +58,14 @@ func (p *Pad) AddCells( cells []Cell ) {
   }
 }
 
+func (p *Pad) SetCell( cell Cell ) {
+  cell.Touch = true
+
+  p.Mv( p.Curs.Y, p.Curs.X )
+  p.Buffer[ p.Curs.Y ][ p.Curs.X ] = cell
+}
+
+
 func (p *Pad) SetCells( cells []Cell ) {
   for _, c := range cells {
     p.SetCell( c )
@@ -62,74 +73,96 @@ func (p *Pad) SetCells( cells []Cell ) {
   }
 }
 
+func (p *Pad) SetFace( face uint64 ){
+  p.Attrs, p.Color, _, _ = extractData( face )
+}
+
+func (p *Pad) GetDefaultCell() Cell {
+  return Cell{ Color: p.Color, Attrs: p.Attrs, Touch: true }
+}
+
+func (p *Pad) StrToCells( str string ) []Cell {
+  c := make([]Cell, len( str ) )
+  i, dCell := 0, p.GetDefaultCell()
+
+
+  for _, ch := range str {
+    c[i]    = dCell
+    c[i].Ch = ch
+    i++
+  }
+
+  return c[:i]
+}
+
 func (p *Pad) mvCurs( nl bool ) {
-  if nl || p.Curs.X + 1 >= p.Screen.Width {
+  if nl || (p.AutoFill && p.Curs.X + 1 >= p.Screen.Width) {
     p.Curs.X = 0
   } else {
     p.Curs.X++
     return
   }
 
-  if p.Curs.Y + 1 < len(p.Buffer) {
-    p.Curs.Y++
-  } else {
-    p.Buffer = append(p.Buffer, make( []Cell, 0, 4 ) )
-    p.Curs.Y++
+  p.Curs.Y++
+}
+
+func (p *Pad) Mv( y, x int ){
+  if y < 0 || x < 0 { return }
+
+  for len(p.Buffer) < y + 1 {
+    p.Buffer = append( p.Buffer, []Cell{} )
   }
+
+  for len(p.Buffer[y]) < x + 1  {
+    p.Buffer[y] = append(p.Buffer[y], Cell{} )
+  }
+
+  p.Curs.Y, p.Curs.X = y, x
 }
 
 func (p *Pad) Draw() {
+  dCell := p.Screen.GetDefaultCell()
+
   for row := 0; row < p.Screen.Height; row++ {
     for col := 0; col < p.Screen.Width; col++ {
       bRow, bCol := row + p.Frame.Y, col + p.Frame.X
-      if bRow < len(p.Buffer) && bCol < len(p.Buffer[bRow]) {
-        p.Screen.Buffer[row][col] = p.Buffer[bRow][bCol]
-        p.Screen.Buffer[row][col].Touch = true
+      if bRow < 0 || bCol < 0 || bRow >= len(p.Buffer) || bCol >= len(p.Buffer[bRow]) {
+        p.Screen.Buffer[row][col] = dCell
         continue
       }
 
-      p.Screen.Buffer[row][col] = Cell{ Touch: true }
+      p.Screen.Buffer[row][col] = p.Buffer[bRow][bCol]
     }
   }
 
-  p.Screen.Touch = true
-  p.Screen.Refresh()
+  p.Screen.Draw()
 }
 
 const ( Right int = iota; Up; Left; Down; DownRight; DownLeft; UpRight;  UpLeft; PgUp; PgDown; Start; End )
 
 func (p *Pad) Scroll( dir int ){
-  var dx, dy int
-
   switch dir {
-  case Right    : dx =  1; dy =  0
-  case Up       : dx =  0; dy = -1
-  case Left     : dx = -1; dy =  0
-  case Down     : dx =  0; dy =  1
-  case DownRight: dx =  1; dy =  1
-  case UpRight  : dx =  1; dy = -1
-  case UpLeft   : dx = -1; dy = -1
-  case DownLeft : dx = -1; dy =  1
-  case PgUp   :
-    dy = -p.Screen.Height
-    if p.Frame.Y + dy < p.Screen.Height {
-      p.Frame.Y = 0
-    }
-  case PgDown :
-    dy = p.Screen.Height
-    if p.Frame.Y + dy > len(p.Buffer) - p.Screen.Height {
-      p.Frame.Y = len(p.Buffer) - p.Screen.Height
-      dy = 0
-    }
-  case Start: p.Frame.X = 0; p.Frame.Y = 0
-  case End  : p.Frame.X = 0;
-    p.Frame.Y = len(p.Buffer) - p.Screen.Height
+  case Right    : p.Frame.X++
+  case Up       : p.Frame.Y--
+  case Left     : p.Frame.X--
+  case Down     : p.Frame.Y++
+  case DownRight: p.Frame.X++;  p.Frame.Y++
+  case UpRight  : p.Frame.X++;  p.Frame.Y--
+  case UpLeft   : p.Frame.X--;  p.Frame.Y--
+  case DownLeft : p.Frame.X--;  p.Frame.Y++
+  case Start    : p.Frame.X  =  0; p.Frame.Y = 0
+  case End      : p.Frame.X  =  0; p.Frame.Y = len(p.Buffer) - p.Screen.Height
+  case PgUp     : p.Frame.Y += -p.Screen.Height
+  case PgDown   : p.Frame.Y +=  p.Screen.Height
   }
 
-  if p.Frame.X + dx >= 0 && p.Frame.Y + dy >= 0 &&
-     p.Frame.X + dx <= p.Screen.Width && p.Frame.Y + dy <= len(p.Buffer) {
-    p.Frame.X += dx
-    p.Frame.Y += dy
+  if p.Frame.X < 0 { p.Frame.X = 0
+  } else if p.Frame.X > p.Screen.Width { p.Frame.X = p.Screen.Width }
+
+  if p.Frame.Y < 0 || len(p.Buffer) - p.Screen.Height < 0 {
+    p.Frame.Y = 0
+  } else if p.Frame.Y > len(p.Buffer) - p.Screen.Height {
+    p.Frame.Y = len(p.Buffer) - p.Screen.Height
   }
 
   p.Draw()
@@ -254,26 +287,13 @@ func (p *Pad) ParseMorg( str string ) {
   var doc katana.Doc
   doc.Parse( str )
 
-  p.mvCurs( true )
-  p.mvCurs( true )
+  p.Mv( 2, 0 )
+  p.AddCenterCells( fontify( doc.Title, 0 ), 0 )
 
-
-  p.AddCenterCells( CustomFontify( katana.StrToMark( doc.Title ), ColorCyan | Bold ), 0 )
-
-  if len(doc.Subtitle) != 0 {
-    p.AddCenterCells( CustomFontify( katana.StrToMark( doc.Subtitle ), ColorRed | Bold ), 0 )
+  if doc.Subtitle.HasSomething() {
+    p.AddCenterCells( fontify( doc.Subtitle, 0 ), 0 )
     p.mvCurs( true )
   }
-
-
-// {{ if .OptionsData.Toc }}
-// <div id="toc">
-//   <p>index</p>
-//   <div id="toc-contents">
-//   {{ ToToc .Toc .OptionsData }}
-//   </div>
-// </div>
-// {{ end }}
 
   p.mvCurs( true )
 
@@ -281,7 +301,7 @@ func (p *Pad) ParseMorg( str string ) {
 }
 
 func (p *Pad) makeBody( toc []katana.DocNode, options katana.Options ) {
-  for _, h := range( toc ) {
+  for _, h := range toc {
     full := h.Get()
     if full.N == 0 {
     } else {
@@ -293,7 +313,6 @@ func (p *Pad) makeBody( toc []katana.DocNode, options katana.Options ) {
 
       p.CustomFontify( full.Mark, ColorCyan | Bold )
       p.mvCurs( true )
-
     }
 
     if len( h.Cont ) > 0 {
@@ -304,7 +323,7 @@ func (p *Pad) makeBody( toc []katana.DocNode, options katana.Options ) {
 }
 
 func (p *Pad) walkContent( doc []katana.DocNode, options katana.Options, deep uint ){
-  for _, node := range( doc ) {
+  for _, node := range doc {
     switch node.Type() {
     case katana.EmptyNode     :
     case katana.CommentNode   :
@@ -323,17 +342,6 @@ func (p *Pad) walkContent( doc []katana.DocNode, options katana.Options, deep ui
   }
 }
 
-func (p *Pad) Mv( y, x int ){
-  for len(p.Buffer) < y + 1 {
-    p.Buffer = append( p.Buffer, []Cell{} )
-  }
-
-  for len(p.Buffer[y]) < x + 1  {
-    p.Buffer[y] = append(p.Buffer[y], Cell{} )
-  }
-
-  p.Curs.Y, p.Curs.X = y, x
-}
 
 func (p *Pad) Shoot( y, x int, cell Cell ){
   for len(p.Buffer) < y + 1 {
@@ -357,7 +365,7 @@ func (p *Pad) Shooter( y, x int, cells []Cell ){
 func (p *Pad) makeList( node katana.DocNode, options katana.Options, deep uint ){
   dNode := node.Get()
 
-  for _, element := range( node.Cont ) {
+  for _, element := range node.Cont {
     full := element.Get()
     row := p.Curs.Y
     switch dNode.N {
@@ -426,7 +434,7 @@ func (p *Pad) makeCommandPre( comm katana.FullData, options katana.Options, deep
 }
 
 func (p *Pad) makeCommandFont( comm katana.FullData, body []katana.DocNode, options katana.Options, deep uint ){
-  for _, node := range( body ) {
+  for _, node := range body {
     switch node.Type() {
     default:
       bNode := []katana.DocNode{ node }
@@ -456,7 +464,7 @@ func (p *Pad) makeCommandFont( comm katana.FullData, body []katana.DocNode, opti
 }
 
 func (p *Pad) makeCommandQuote( comm katana.FullData, body []katana.DocNode, options katana.Options, deep uint ){
-  for _, c := range( body ) {
+  for _, c := range body {
     nodeData := c.Get()
     switch nodeData.N {
     case katana.TextQuoteAuthor:
@@ -480,40 +488,25 @@ func (p *Pad) makeCommandFigure( comm katana.FullData, body []katana.DocNode, op
   p.walkContent( body, options, deep + 3 )
 }
 
-func fontify( m katana.Markup ) (result []Cell) {
+func fontify( m katana.Markup, attrs uint8 ) []Cell {
+  att, color, _, _ := extractData( getColor( m.Type ) )
+
   if len( m.Custom ) == 0 && len( m.Body ) == 0 {
-    result = make( []Cell, len(m.Data) )
-
-    i := 0
-    for _, ch := range m.Data {
-      result[ i ].Ch = ch
-      i++
-    }
-
-    return result[:i]
+    return StrToCells( m.Data, color, att | attrs )
   }
 
-  custom, body := make( []Cell, 0, 32 ), make( []Cell, 0, 32 )
-
-  for _, c := range m.Custom {
-    p := fontify( c )
-    custom = append( custom, p... )
-  }
-
+  var body CellBuffer
   for _, c := range m.Body {
-    p := fontify( c )
-    body = append( body, p... )
-  }
-
-  if len(custom) == 0 {
-    switch m.Type {
-    case 'l', 'N', 'n', 't' :
-      // custom = ToU64( m.MakeCustom(), m.Type )
+    if c.Type == katana.MarkupNil {
+      c.Type = m.Type
+    } else {
+      att = extractAttrs( getColor( m.Type ) )
     }
+
+    body.Write( fontify( c, attrs | att ) )
   }
 
-//  return ToLabel( body, custom, m.Type )
-  return
+  return atCommand( body.Data(), m.Type, attrs )
 }
 
 func (p *Pad) CustomFontify( m katana.Markup, color uint64 ){
@@ -528,40 +521,58 @@ func (p *Pad) CustomFontify( m katana.Markup, color uint64 ){
     if c.Type == katana.MarkupNil {
       p.CustomFontify( c, color )
     } else {
-      p.CustomFontify( c, getColor( c.Type ) | extractAttrs( color ))//      body.Write( customFontify( c,  ) )
+      p.CustomFontify( c, getColor( c.Type ) | getAttrs( color ))
     }
   }
 }
 
+// func tontify( m katana.Markup ) (str string) {
+//   if len( m.Custom ) == 0 && len( m.Body ) == 0 {
+//     return m.Data
+//   }
+
+//   var custom, body string
+//   for _, c := range m.Custom { custom += tontify( c ) }
+//   for _, c := range m.Body   { body   += tontify( c ) }
+
+//   if custom == "" {
+//     switch m.Type {
+//     case 'l', 'N', 'n', 't' :  custom  = m.MakeCustom()
+//     }
+//   }
+
+//   return atCommand( body, custom, m.Type )
+// }
+
 func CustomFontify( m katana.Markup, color uint64 ) []Cell {
-  var body Buffer
+  var body CellBuffer
 
   if len( m.Custom ) == 0 && len( m.Body ) == 0 {
     for _, ch := range m.Data {
       body.WriteU64( uint64(ch) | color )
     }
 
-    return body.CellData()
+    return body.Data()
   }
 
   for _, c := range m.Body {
     if c.Type == katana.MarkupNil {
-      body.WriteCells( CustomFontify( c, color ) )
+      body.Write( CustomFontify( c, color ) )
     } else {
-      body.WriteCells( openDecorator( c.Type ) )
-      body.WriteCells( CustomFontify( c, getColor( c.Type ) | extractAttrs( color ) ) )
-      body.WriteCells( closeDecorator( c.Type ) )
+      // body.Write( openDecorator( c.Type ) )
+      body.Write( CustomFontify( c, getColor( c.Type ) | getAttrs( color ) ) )
+      // body.Write( closeDecorator( c.Type ) )
     }
   }
 
-  return body.CellData()
+  return body.Data()
 }
 
 func Fontify( str string ) []Cell {
   var markup katana.Markup
   markup.Parse( str )
 
-  return fontify( markup )
+  return fontify( markup, 0 )
 }
 
 func ToText( str string ) []uint64 {
@@ -574,7 +585,7 @@ func ToText( str string ) []uint64 {
 func ToCustomU64( str string, color uint64 ) (result []uint64) {
   // result = make( []uint64, 0, 32 )
 
-  // for _, c := range( str ) {
+  // for _, c := range str {
   //   result = append( result, uint64( c ) | color )
   // }
 
@@ -586,6 +597,8 @@ func getColor( t byte ) uint64 {
   case katana.MarkupNil, katana.MarkupEsc, katana.MarkupErr: return ColorBW
   case katana.MarkupHeadline: return ColorCyan | Bold
   case katana.MarkupText    : return ColorWhite
+  case katana.MarkupTitle   : return ColorBW | Bold
+  case katana.MarkupSubTitle: return ColorBR | Bold
   case '!' : return ColorWhite
   case '"' : return ColorWhite
   case '#' : return ColorWhite
@@ -676,142 +689,134 @@ func getColor( t byte ) uint64 {
   return ColorRed
 }
 
-func (p *Pad) Fontify( m katana.Markup, t uint8 ){
+func atCommand( body []Cell, t, attrs uint8 ) []Cell {
+  var buff CellBuffer
+  buff.SetFace( getColor( t ) | uint64(attrs) << 56 )
+
   switch t {
-  case katana.MarkupNil, katana.MarkupEsc, katana.MarkupErr: p.CustomFontify( m, ColorBW )
-  case '!' : p.CustomFontify( m, ColorBW )
+  case katana.MarkupNil, katana.MarkupEsc, katana.MarkupErr: return body
+  case katana.MarkupHeadline: return body
+  case katana.MarkupText    : return body
+  case katana.MarkupTitle   : return body
+  case katana.MarkupSubTitle: return body
+  case '!' : return body
   case '"' :
-    p.AddCh( '“' | getColor( t ) )
-    p.CustomFontify( m, getColor( '"') )
-    p.AddCh( '”' | getColor( t ) )
-  case '#' : p.CustomFontify( m, ColorBW ) //`<span class="path" >` + body + "</span>"
-  case '$' : p.CustomFontify( m, ColorBW ) //`<code class="command" >` + body + "</code>"
-  case '%' : p.CustomFontify( m, ColorBW ) //body // "parentesis"
-  case '&' : p.CustomFontify( m, ColorBW ) //body
-  case '\'': p.CustomFontify( m, ColorBW )
-    // buf.Write( ToU64( "‘", '\'' ) )
-    // buf.Write( body )
-    // buf.Write( ToU64( "’", '\'' ) )
-    // return buf.Data()
-  case '*' : p.CustomFontify( m, ColorBW ) //body
-  case '+' : p.CustomFontify( m, ColorBW ) //body
-  case ',' : p.CustomFontify( m, ColorBW ) //body
-  case '-' : p.CustomFontify( m, ColorBW )
-    // buf.Write( ToU64( "––", '-' ) )
-    // buf.Write( body )
-    // buf.Write( ToU64( "––", '-' ) )
-    // return buf.Data()
-  case '.' : p.CustomFontify( m, ColorBW ) //body
-  case '/' : p.CustomFontify( m, ColorBW ) //body
-  case '0' : p.CustomFontify( m, ColorBW ) //body
-  case '1' : p.CustomFontify( m, ColorBW ) //body
-  case '2' : p.CustomFontify( m, ColorBW ) //body
-  case '3' : p.CustomFontify( m, ColorBW ) //body
-  case '4' : p.CustomFontify( m, ColorBW ) //body
-  case '5' : p.CustomFontify( m, ColorBW ) //body
-  case '6' : p.CustomFontify( m, ColorBW ) //body
-  case '7' : p.CustomFontify( m, ColorBW ) //body
-  case '8' : p.CustomFontify( m, ColorBW ) //body
-  case '9' : p.CustomFontify( m, ColorBW ) //body
-  case ':' : p.CustomFontify( m, ColorBW ) //"<dfn>" + body + "</dfn>"
-  case ';' : p.CustomFontify( m, ColorBW ) //body
-  case '=' : p.CustomFontify( m, ColorBW ) //body
-  case '?' : p.CustomFontify( m, ColorBW ) //body
-  case 'A' : p.CustomFontify( m, ColorBW ) //`<span class="acronym" >` + body + "</span>"
-  case 'B' : p.CustomFontify( m, ColorBW ) //body
-  case 'C' : p.CustomFontify( m, ColorBW ) //body // "smallCaps"
-  case 'D' : p.CustomFontify( m, ColorBW ) //body
-  case 'E' : p.CustomFontify( m, ColorBW ) //body // "error"
-  case 'F' : p.CustomFontify( m, ColorBW ) //body // "Func"
-  case 'G' : p.CustomFontify( m, ColorBW ) //body
-  case 'H' : p.CustomFontify( m, ColorBW ) //body
-  case 'I' : p.CustomFontify( m, ColorBW ) //body
-  case 'J' : p.CustomFontify( m, ColorBW ) //body
-  case 'K' : p.CustomFontify( m, ColorBW ) //body // "keyword"
-  case 'L' : p.CustomFontify( m, ColorBW ) //body // "label"
-  case 'M' : p.CustomFontify( m, ColorBW ) //body
-  case 'N' : p.CustomFontify( m, ColorBW ) //`<span class="defnote" id="` + ToLink(custom) + `" >` + body + "</span>"
-  case 'O' : p.CustomFontify( m, ColorBW ) //body
-  case 'P' : p.CustomFontify( m, ColorBW ) //body
-  case 'Q' : p.CustomFontify( m, ColorBW ) //body
-  case 'R' : p.CustomFontify( m, ColorBW ) //body // "result"
-  case 'S' : p.CustomFontify( m, ColorBW ) //body
-  case 'T' : p.CustomFontify( m, ColorBW ) //body // "radiotarget"
-  case 'U' : p.CustomFontify( m, ColorBW ) //body
-  case 'V' : p.CustomFontify( m, ColorBW ) //body // "var"
-  case 'W' : p.CustomFontify( m, ColorBW ) //body // "warning"
-  case 'X' : p.CustomFontify( m, ColorBW ) //body
-  case 'Y' : p.CustomFontify( m, ColorBW ) //body
-  case 'Z' : p.CustomFontify( m, ColorBW ) //body
-  case '\\': p.CustomFontify( m, ColorBW ) //body
-  case '^' : p.CustomFontify( m, ColorBW ) //"<sup>" + body + "</sup>"
-  case '_' : p.CustomFontify( m, ColorBW ) //"<sub>" + body + "</sub>"
-  case '`' : p.CustomFontify( m, ColorBW ) //body
-  case 'a' : p.CustomFontify( m, ColorBW ) //"<abbr>" + body + "</abbr>"
-  case 'b' : p.CustomFontify( m, ColorBW ) //"<b>" + body + "</b>"
-  case 'c' : p.CustomFontify( m, ColorBW ) //"<code>" + body + "</code>"
-  case 'd' : p.CustomFontify( m, ColorBW ) //body // data
-  case 'e' : p.CustomFontify( m, ColorBW ) //"<em>" + body + "</em>"
-  case 'f' : p.CustomFontify( m, ColorBW ) //`<span class="file" >` + body + "</span>"
-  case 'g' : p.CustomFontify( m, ColorBW ) //body
-  case 'h' : p.CustomFontify( m, ColorBW ) //body
-  case 'i' : p.CustomFontify( m, ColorBW ) //"<i>" + body + "</i>"
-  case 'j' : p.CustomFontify( m, ColorBW ) //body
-  case 'k' : p.CustomFontify( m, ColorBW ) //"<kbd>" + body + "</kbd>"
-  case 'l' : p.CustomFontify( m, ColorBW )
-//    if custom != "" && custom[ColorBW] == '#' && body != "" && body[ColorBW] == '#' { body = body[1:] }
-//    return body//`<a href="` + ToLink( custom ) + `" >` + body + "</a>"
-  case 'm' : p.CustomFontify( m, ColorBW ) //`<span class="math" >` + body + "</span>"
-  case 'n' : p.CustomFontify( m, ColorBW ) //`<span class="note" ><sup><a href="#` + ToLink(custom) + `" >` + body + "</a></sup></span>"
-  case 'o' : p.CustomFontify( m, ColorBW ) //body
-  case 'p' : p.CustomFontify( m, ColorBW ) //body
-  case 'q' : p.CustomFontify( m, ColorBW )
-    // buf.Write( ToU64( "“", '"' ) )
-    // buf.Write( body )
-    // buf.Write( ToU64( "”", '"' ) )
-    // return buf.Data()
-  case 'r' : p.CustomFontify( m, ColorBW ) //body // ref
-  case 's' : p.CustomFontify( m, ColorBW ) //body
-  case 't' : p.CustomFontify( m, ColorBW ) //`<span id="` + custom + `" >` + body + "</span>"
-  case 'u' : p.CustomFontify( m, ColorBW ) //"<u>" + body + "</u>"
-  case 'v' : p.CustomFontify( m, ColorBW ) //`<code class="verbatim" >` + body + "</code>"
-  case 'w' : p.CustomFontify( m, ColorBW ) //body
-  case 'x' : p.CustomFontify( m, ColorBW ) //body
-  case 'y' : p.CustomFontify( m, ColorBW ) //body
-  case 'z' : p.CustomFontify( m, ColorBW ) //body
-  case '|' : p.CustomFontify( m, ColorBW ) //body
-  case '~' : p.CustomFontify( m, ColorBW ) //body
+    buff.WriteRune( '“' )
+    buff.Write( body )
+    buff.WriteRune( '”' )
+  case '#' : return body
+  case '$' : return body
+  case '%' : return body
+  case '&' : return body
+  case '\'':
+    buff.WriteRune( '‘' )
+    buff.Write( body )
+    buff.WriteRune( '’' )
+  case '*' : return body
+  case '+' : return body
+  case ',' : return body
+  case '-' :
+    buff.WriteString( "––" )
+    buff.Write( body )
+    buff.WriteString( "––" )
+  case '.' : return body
+  case '/' : return body
+  case '0' : return body
+  case '1' : return body
+  case '2' : return body
+  case '3' : return body
+  case '4' : return body
+  case '5' : return body
+  case '6' : return body
+  case '7' : return body
+  case '8' : return body
+  case '9' : return body
+  case ':' : return body
+  case ';' : return body
+  case '=' : return body
+  case '?' : return body
+  case 'A' : return body
+  case 'B' : return body
+  case 'C' : return body
+  case 'D' : return body
+  case 'E' : return body
+  case 'F' : return body
+  case 'G' : return body
+  case 'H' : return body
+  case 'I' : return body
+  case 'J' : return body
+  case 'K' : return body
+  case 'L' : return body
+  case 'M' : return body
+  case 'N' : return body
+  case 'O' : return body
+  case 'P' : return body
+  case 'Q' : return body
+  case 'R' : return body
+  case 'S' : return body
+  case 'T' : return body
+  case 'U' : return body
+  case 'V' : return body
+  case 'W' : return body
+  case 'X' : return body
+  case 'Y' : return body
+  case 'Z' : return body
+  case '\\': return body
+  case '^' : return body
+  case '_' : return body
+  case '`' : return body
+  case 'a' : return body
+  case 'b' : return body
+  case 'c' : return body
+  case 'd' : return body
+  case 'e' : return body
+  case 'f' : return body
+  case 'g' : return body
+  case 'h' : return body
+  case 'i' : return body
+  case 'j' : return body
+  case 'k' : return body
+  case 'l' : return body
+  case 'm' : return body
+  case 'n' : return body
+  case 'o' : return body
+  case 'p' : return body
+  case 'q' :
+    buff.WriteRune( '“' )
+    buff.Write( body )
+    buff.WriteRune( '”' )
+  case 'r' : return body
+  case 's' : return body
+  case 't' : return body
+  case 'u' : return body
+  case 'v' : return body
+  case 'w' : return body
+  case 'x' : return body
+  case 'y' : return body
+  case 'z' : return body
+  case '|' : return body
+  case '~' : return body
   }
+
+  return buff.Data()
 }
 
-func openDecorator( t uint8 ) []Cell {
+func openDecorator( t uint8 ) string {
   switch t {
-  case '"', 'q' : return StrToCells( "“", 0, 0 )
-  case '\'': return StrToCells( "‘", 0, 0 )
-  case '-' : return StrToCells( "––", 0, 0 )
+  case '"', 'q' : return "“"
+  case '\'': return "‘"
+  case '-' : return "––"
   }
 
-  return []Cell{}
+  return ""
 }
 
-func closeDecorator( t uint8 ) []Cell {
+func closeDecorator( t uint8 ) string {
   switch t {
-  case '"', 'q' : return StrToCells( "”", 0, 0 )
-  case '\'': return StrToCells( "’", 0, 0 )
-  case '-' : return StrToCells( "––", 0, 0 )
+  case '"', 'q' : return "”"
+  case '\'': return "’"
+  case '-' : return "––"
   }
 
-  return []Cell{}
-}
-
-func StrToCells( str string, color, attrs uint8  ) []Cell {
-  c := make([]Cell, len( str ) )
-  i := 0
-
-  for _, ch := range str {
-    c[i] = Cell{ Ch: ch, Color: color, Attrs: attrs }
-    i++
-  }
-
-  return c[:i]
+  return ""
 }

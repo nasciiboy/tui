@@ -1,12 +1,9 @@
 package tui
 
 const (
-)
-
-const (
-  runeMask  uint64 = 0x000000007FFFFFFF
-  hasKey    uint64 = 1 << 32
-  modMask   uint64 = 0x0000FFFF00000000
+  hasRune   uint64 = 0x000000007FFFFFFF
+  hasKey    uint64 = 0x0000000080000000
+  hasMod    uint64 = 0x0000FFFF00000000
   hasColor  uint64 = 0x00FF000000000000
   hasAttr   uint64 = 0xFF00000000000000
 )
@@ -60,14 +57,6 @@ const (
 )
 
 const (
-	bold   uint8 = 1 << (1 + iota)
-	underline
-	reverse
-  // Blink
-  normal uint8 = 0
-)
-
-const (
 	Bold   uint64 = 1 << (57 + iota)
 	Underline
 	Reverse
@@ -83,19 +72,11 @@ const (
   aNormal uint8 = 0
 )
 
-type ColorPair struct {
-  Bg, Fg, Attrs uint8
-}
-
 const (
   Ctrl uint64 = 1 << (32 + iota)
   Alt
   Shift
 
-)
-
-const (
-  Iotatest uint64 = iota
 )
 
 const (
@@ -160,39 +141,10 @@ const (
   Mouse4_TRIPLE_CLICKED
 )
 
-type Cell struct {
-  Ch    rune
-  Color uint8
-  Attrs uint8
-  Touch bool
+type FontFace struct {
+  Bg, Fg, Attrs uint8
 }
 
 type Gps struct {
   Y, X int
-}
-
-type Window struct {
-	CurY,    CurX  int    // current cursor position
-	Height,  Width int   // maximums of x and y, NOT window size
-	InitY,   InitX int   // screen coords of upper-left-hand corner
-
-  Color   uint8
-  Attrs   uint8
-	BGChar  rune         // current background char
-
-  Buffer [][]Cell
-
-	// bool	_notimeout;	// no time out on function-key entry?
-
-  Looper bool
-  Scroll bool
-  Touch  bool
-  Echo   bool
-  Curs   bool
-  Delay  bool
-  Resize bool
-  // Beep   bool
-  // Flash  bool
-
-	// bool	_scroll;	// OK to scroll this window?
 }
